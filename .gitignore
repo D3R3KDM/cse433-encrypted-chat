@@ -1,0 +1,30 @@
+# Local OpenSSL install (large third-party binaries; install OpenSSL separately)
+OpenSSL-Win64/
+
+# Visual Studio caches and build output
+.vs/
+x64/
+x86/
+Debug/
+Release/
+ipch/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.ipch
+*.tlog
+*.log
+*.lastbuildstate
+*.vcxproj.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Compiled binaries
+*.exe
+*.o
+client
+server

@@ -1,0 +1,71 @@
+Terminal Chat App (Ubuntu)
+│
+├── [Prompt User]: Choose Encryption Mode
+│     ├─ 1) RC4
+│     ├─ 2) RC4_40
+│     ├─ 3) AES-256-CBC + HMAC
+│     ├─ 4) AES-256-GCM (tag only)
+│     └─ 5) ChaCha20 (tag only)
+│
+├── [Establish Connection]
+│     ├─ server.cpp      # 设置TCP socket服务器，接收并处理加密消息
+│     └─ client.cpp      # 创建TCP客户端，输入消息 → 加密 → 发送
+│
+├── [SymmetricCipher]: Encrypt/Decrypt using chosen mode
+│     ├─ symmetric_cipher.h       # 加密算法的抽象接口类
+│     ├─ rc4_cipher.cpp           # RC4流加密实现（绑定HMAC）
+│     ├─ rc4_40_cipher.cpp        # RC4_40实现（弱版本RC4，绑定HMAC）
+│     ├─ aes_cbc_cipher.cpp       # AES-256-CBC块加密实现（绑定HMAC）
+│     ├─ aes_gcm_cipher.cpp       # AES-256-GCM认证加密实现（含tag，不用HMAC）
+│     └─ chacha20_cipher.cpp      # ChaCha20流加密实现（不含认证）
+│
+├── [Optional] HMACAuthenticator: add/check HMAC
+│     ├─ authenticator.h          # 认证接口类
+│     ├─ hmac_authenticator.h     # HMAC类头文件（定义）
+│     └─ hmac_authenticator.cpp   # HMAC类实现（使用 OpenSSL HMAC_SHA256）
+│
+├── [Send Message]: (ciphertext [+ tag or hmac])
+│     └─ client.cpp：输入→加密→加tag/hmac→发送
+│
+└── [Receive Message]: verify integrity → decrypt → show plaintext
+      └─ server.cpp：接收→验证tag/hmac→解密→输出
+
+==========================
+🛠 How to Compile & Run on Ubuntu:
+==========================
+
+1. 安装依赖（只需一次）：
+   sudo apt install libssl-dev
+
+2. 编译客户端：
+   g++ -o client client.cpp rc4_cipher.cpp rc4_40_cipher.cpp aes_cbc_cipher.cpp aes_gcm_cipher.cpp chacha20_cipher.cpp hmac_authenticator.cpp -lssl -lcrypto
+
+3. 编译服务器：
+   g++ -o server server.cpp rc4_cipher.cpp rc4_40_cipher.cpp aes_cbc_cipher.cpp aes_gcm_cipher.cpp chacha20_cipher.cpp hmac_authenticator.cpp -lssl -lcrypto
+
+4. 运行：
+   终端 1:
+   ./server
+
+   终端 2:
+   ./client
+
+==========================
+🛠 推荐创建自动构建脚本 build.sh:
+==========================
+
+#!/bin/bash
+g++ -o client client.cpp rc4_cipher.cpp rc4_40_cipher.cpp aes_cbc_cipher.cpp aes_gcm_cipher.cpp chacha20_cipher.cpp hmac_authenticator.cpp -lssl -lcrypto
+g++ -o server server.cpp rc4_cipher.cpp rc4_40_cipher.cpp aes_cbc_cipher.cpp aes_gcm_cipher.cpp chacha20_cipher.cpp hmac_authenticator.cpp -lssl -lcrypto
+echo "Build done!"
+
+使用：
+chmod +x build.sh
+./build.sh
+
+==========================
+✅ 运行效果（示例）
+==========================
+- Server 提示： [SERVER] Choose encryption mode:
+- Client 提示： [CLIENT] Choose encryption mode:
+- 成功收发加密消息 + 完整性验证成功 / 失败提示
