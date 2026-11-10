@@ -51,6 +51,9 @@ full duplex (separate send / receive threads).
    `<OpenSSL>\lib\VC\x64\MD` to **Additional Library Directories**.
    The source already links `ws2_32.lib`, `libssl.lib` and `libcrypto.lib` via `#pragma comment`.
 3. Make sure `libssl-3-x64.dll` and `libcrypto-3-x64.dll` are on `PATH` or next to the executable.
+   For the RC4 modes (1 and 2), also copy `legacy.dll` from `<OpenSSL>\bin` next to the executable
+   (or set `OPENSSL_MODULES` to that folder): OpenSSL 3 only provides RC4 through its legacy provider.
+   The programs print a warning at startup if it cannot be found.
 4. In `chat_client.cpp`, set `ip` to the server's IPv4 address (default `127.0.0.1`).
 
 ### Linux (SEED Ubuntu containers)
@@ -70,7 +73,7 @@ Start the server first, then the client (default port **5194**):
 ## Usage
 
 1. Choose an encryption mode (1–5) when prompted.
-2. Type messages and press Enter to send.
+2. Type messages and press Enter to send (up to 1000 bytes per message).
 3. Type `change mode` to switch cipher; the new mode is synchronised to the other side.
 4. Type `end chat` to close the connection.
 

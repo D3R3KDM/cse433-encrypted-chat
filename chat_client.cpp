@@ -28,6 +28,7 @@
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
+#include <openssl/provider.h>
 
 using namespace std;
 
@@ -36,6 +37,37 @@ atomic<bool> running(true);
 atomic<int>  mode(1);
 unsigned char session_key[32]; // 对称加密会话密钥
 unsigned char hmac_key[32];    // HMAC-SHA256 密钥（模式 1-3）
+const int MAX_MSG = 1000;      // 单条消息最大字节数（AES-CBC 填充后 ≤ 1008 < BUF_SZ）
+const int BUF_SZ  = 1024;      // 密文缓冲区大小
+
+/* ---------- OpenSSL 3.x：RC4 / RC4_40 位于 legacy provider ---------- */
+void load_providers() {
+    OSSL_PROVIDER* legacy = OSSL_PROVIDER_load(nullptr, "legacy");
+#ifdef _WIN32
+    if (!legacy) {  // 默认路径找不到 legacy.dll 时，改为在 exe 所在目录查找
+        char path[MAX_PATH];
+        DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+        string dir(path, n);
+        dir = dir.substr(0, dir.find_last_of("\\/"));
+        OSSL_PROVIDER_set_default_search_path(nullptr, dir.c_str());
+        legacy = OSSL_PROVIDER_load(nullptr, "legacy");
+    }
+#endif
+    OSSL_PROVIDER_load(nullptr, "default");
+    if (!legacy)
+        cerr << "[WARN] OpenSSL legacy provider not found; RC4 modes (1, 2) will not work.\n"
+                "       Copy legacy.dll next to the exe, or set OPENSSL_MODULES.\n";
+}
+
+/* ---------- 收满 n 字节（TCP 可能把一条消息分多次送达） ---------- */
+bool recv_all(int sock, char* buf, int n) {
+    while (n > 0) {
+        int r = recv(sock, buf, n, 0);
+        if (r <= 0) return false;
+        buf += r; n -= r;
+    }
+    return true;
+}
 
 /* ---------- RSA Key Management ---------- */
 RSA* generate_rsa_keypair() {
@@ -60,10 +92,10 @@ void send_public_key(int sock, RSA* rsa) {
 
 RSA* receive_public_key(int sock) {
     uint32_t len_net;
-    recv(sock, reinterpret_cast<char*>(&len_net), sizeof(len_net), 0);
+    recv_all(sock, reinterpret_cast<char*>(&len_net), sizeof(len_net));
     int len = ntohl(len_net);
     auto* buf = new char[len];
-    recv(sock, buf, len, 0);
+    recv_all(sock, buf, len);
     BIO* bio = BIO_new_mem_buf(buf, len);
     RSA* rsa = PEM_read_bio_RSAPublicKey(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
@@ -215,7 +247,13 @@ void sender(int sock) {
             continue;
         }
 
-        unsigned char ct[1024]{}, tag[16]{}, mac[32]{}, iv[16]{};
+        if (msg.empty()) continue;
+        if ((int)msg.size() > MAX_MSG) {
+            cout << "[CLIENT] Message too long (max " << MAX_MSG << " bytes), not sent.\n";
+            continue;
+        }
+
+        unsigned char ct[BUF_SZ]{}, tag[16]{}, mac[32]{}, iv[16]{};
         int ctlen = 0;
         const unsigned char* p = reinterpret_cast<const unsigned char*>(msg.data());
 
@@ -253,23 +291,27 @@ void receiver(int sock) {
         if (peek <= 0) { running = false; break; }
 
         if (!strncmp(hdr, "##END##", 7)) {
-            recv(sock, hdr, 8, 0);
+            recv_all(sock, hdr, 8);
             running = false; break;
         }
         if (!strncmp(hdr, "##CHANGE##", 10)) {
-            recv(sock, hdr, 11, 0);
-            int newmode; recv(sock, reinterpret_cast<char*>(&newmode), sizeof(int), 0);
+            recv_all(sock, hdr, 11);
+            int newmode; recv_all(sock, reinterpret_cast<char*>(&newmode), sizeof(int));
             mode = newmode;
             cout << "[CLIENT] Mode changed to: " << mode.load() << endl;
             continue;
         }
 
         int ctlen = 0;
-        recv(sock, reinterpret_cast<char*>(&ctlen), sizeof(int), 0);
-        unsigned char ct[1024]{}, pt[1024]{}, tag[16]{}, mac[32]{}, calc[32]{}, iv[16]{};
-        if (mode == 3) recv(sock, reinterpret_cast<char*>(iv), 16, 0);
-        else if (mode == 4 || mode == 5) recv(sock, reinterpret_cast<char*>(iv), 12, 0);
-        recv(sock, reinterpret_cast<char*>(ct), ctlen, 0);
+        recv_all(sock, reinterpret_cast<char*>(&ctlen), sizeof(int));
+        if (ctlen <= 0 || ctlen > BUF_SZ) {
+            cout << "[CLIENT] Bad message length, closing connection.\n";
+            running = false; break;
+        }
+        unsigned char ct[BUF_SZ]{}, pt[BUF_SZ + 32]{}, tag[16]{}, mac[32]{}, calc[32]{}, iv[16]{};
+        if (mode == 3) recv_all(sock, reinterpret_cast<char*>(iv), 16);
+        else if (mode == 4 || mode == 5) recv_all(sock, reinterpret_cast<char*>(iv), 12);
+        recv_all(sock, reinterpret_cast<char*>(ct), ctlen);
 
         int ptlen = -1;
         switch (mode.load()) {
@@ -277,16 +319,16 @@ void receiver(int sock) {
         case 2: ptlen = rc4_decrypt(EVP_rc4_40(), ct, ctlen, pt); break;
         case 3: ptlen = aes_cbc_decrypt(ct, ctlen, pt, iv); break;
         case 4:
-            recv(sock, reinterpret_cast<char*>(tag), 16, 0);
+            recv_all(sock, reinterpret_cast<char*>(tag), 16);
             ptlen = aes_gcm_decrypt(ct, ctlen, tag, pt, iv); break;
         case 5: ptlen = chacha20_decrypt(ct, ctlen, pt, iv); break;
         }
 
         bool ok = true;
         if (mode <= 3) {
-            recv(sock, reinterpret_cast<char*>(mac), 32, 0);
-            cal_hmac(calc, pt, ptlen);
-            ok = memcmp(mac, calc, 32) == 0;
+            recv_all(sock, reinterpret_cast<char*>(mac), 32);
+            if (ptlen >= 0) cal_hmac(calc, pt, ptlen);
+            ok = ptlen >= 0 && memcmp(mac, calc, 32) == 0;
         }
         if (ptlen > 0 && ok) {
             pt[ptlen] = '\0';
@@ -308,6 +350,7 @@ int main() {
         cerr << "WSAStartup failed\n"; return 1;
     }
 #endif
+    load_providers();
     string ip = "127.0.0.1";      // 运行前改成服务器 Windows 机器的 IPv4
     int    port = 5194;
 
